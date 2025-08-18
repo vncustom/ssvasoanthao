@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>So sánh văn bản + Replace</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+    .container { display: flex; flex-direction: column; max-width: 1200px; margin: 0 auto; background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.1); padding: 20px; }
+    .title { text-align: center; margin-bottom: 20px; }
+    .controls { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+    .toggle-button { background: #4CAF50; color: #fff; border: 0; padding: 10px 20px; font-size: 16px; cursor: pointer; border-radius: 4px; transition: .3s; box-shadow: 0 2px 5px rgba(0,0,0,.2); }
+    .toggle-button:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,.2); }
+    .toggle-button.off { background: #f44336; }
+    .action-button { background: #2196F3; color: #fff; border: 0; padding: 10px 20px; font-size: 16px; cursor: pointer; border-radius: 4px; transition: .3s; }
+    .action-button:hover { background: #0b7dda; }
+    .save-mode { background: #4CAF50; }
+    .panels { display: flex; gap: 20px; }
+    .panel { flex: 1; display: flex; flex-direction: column; }
+    .panel-title { font-weight: 600; margin-bottom: 10px; text-align: center; font-size: 18px; }
+    textarea { width: 100%; height: 400px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; resize: vertical; font-size: 16px; line-height: 1.6; }
+    .diff-display { width: 100%; height: 400px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; overflow-y: auto; background: #fff; font-size: 16px; line-height: 1.6; white-space: pre-wrap; box-shadow: inset 0 1px 3px rgba(0,0,0,.1); }
+    .diff-insert { background: #e6ffed; padding: 2px 0; border-radius: 2px; }
+    .diff-delete { background: #ffeef0; padding: 2px 0; border-radius: 2px; }
+    .replace-panel { position: fixed; right: 24px; top: 100px; width: 380px; background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.15); padding: 14px; display: none; z-index: 1000; }
+    .replace-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; cursor: move; user-select: none; }
+    .replace-title { font-weight: 600; font-size: 16px; }
+    .replace-close { background: transparent; border: none; font-size: 20px; cursor: pointer; line-height: 1; padding: 2px 6px; border-radius: 6px; }
+    .replace-close:hover { background: #f2f2f2; }
+    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .field label { font-size: 13px; color: #333; }
+    .field input[type="text"] { padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .row .left { display: flex; align-items: center; gap: 8px; }
+    .mini-btn { padding: 8px 12px; font-size: 14px; border: none; border-radius: 6px; cursor: pointer; background: #2196F3; color: #fff; }
+    .mini-btn.secondary { background: #6c757d; }
+    .mini-btn.warn { background: #f44336; }
+    .checkbox { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+    .checkbox input { width: 16px; height: 16px; }
+    .helper { font-size: 12px; color: #666; margin-top: 2px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1 class="title">So sánh văn bản</h1>
+    <div class="controls">
+      <button id="compareButton" class="toggle-button">So khác biệt</button>
+      <button id="editButton" class="action-button">Chỉnh sửa</button>
+      <button id="replaceButton" class="action-button">Replace</button>
+      <button id="downloadButton" class="action-button">Tải xuống</button>
+    </div>
+
+    <div class="panels">
+      <div class="panel">
+        <div class="panel-title">Bản dịch thủ công</div>
+        <textarea id="leftText" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" placeholder="Nhập văn bản thứ nhất..."></textarea>
+        <div id="leftDiff" class="diff-display" style="display:none"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Bản dịch AI</div>
+        <textarea id="rightText" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" placeholder="Nhập văn bản thứ hai..."></textarea>
+        <div id="rightDiff" class="diff-display" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Replace panel -->
+  <div id="replacePanel" class="replace-panel" role="dialog" aria-modal="true" aria-labelledby="replaceTitle">
+    <div class="replace-header">
+      <div id="replaceTitle" class="replace-title">Tìm & Thay thế</div>
+      <button id="replaceClose" class="replace-close" aria-label="Đóng">×</button>
+    </div>
+
+    <div class="field">
+      <label for="findWhat">Find what</label>
+      <input id="findWhat" type="text" placeholder="Cụm cần tìm" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label for="replaceWith">Replace with</label>
+      <input id="replaceWith" type="text" placeholder="Cụm thay thế" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" />
+    </div>
+    <label class="checkbox" title="Xét hoa/thường khi tìm">
+      <input id="matchCase" type="checkbox" />
+      <span>Match case</span>
+    </label>
+    <div class="helper">Mẹo: Enter = Tìm tiếp, Ctrl/Cmd+Enter = Thay từ vị trí con trỏ đến cuối, Ctrl/Cmd+Z = Undo.</div>
+
+    <div class="row" style="margin-top:10px;">
+      <div class="left">
+        <button id="btnFindNext" class="mini-btn">Find next</button>
+        <button id="btnReplace" class="mini-btn secondary" title="Thay từ vị trí con trỏ đến cuối">Replace</button>
+        <button id="btnReplaceAll" class="mini-btn warn" title="Thay toàn bộ trong cửa sổ bên phải">Replace All</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const compareButton = document.getElementById('compareButton');
+      const editButton = document.getElementById('editButton');
+      const downloadButton = document.getElementById('downloadButton');
+      const replaceButton = document.getElementById('replaceButton');
+
+      const leftText = document.getElementById('leftText');
+      const rightText = document.getElementById('rightText');
+      const leftDiff = document.getElementById('leftDiff');
+      const rightDiff = document.getElementById('rightDiff');
+
+      const replacePanel = document.getElementById('replacePanel');
+      const replaceClose = document.getElementById('replaceClose');
+      const findWhat = document.getElementById('findWhat');
+      const replaceWith = document.getElementById('replaceWith');
+      const matchCase = document.getElementById('matchCase');
+      const btnFindNext = document.getElementById('btnFindNext');
+      const btnReplace = document.getElementById('btnReplace');
+      const btnReplaceAll = document.getElementById('btnReplaceAll');
+
+      let compareMode = false;
+      let editMode = false;
+
+      // ==== Undo stack for programmatic changes & draggable panel ====
+      const undoStack = [];
+      function pushUndoState() {
+        undoStack.push({ value: rightText.value, selStart: rightText.selectionStart || 0, selEnd: rightText.selectionEnd || 0 });
+        if (undoStack.length > 100) undoStack.shift();
+      }
+      function undoProgrammatic() {
+        if (!undoStack.length) return false;
+        const prev = undoStack.pop();
+        rightText.value = prev.value;
+        rightText.selectionStart = prev.selStart;
+        rightText.selectionEnd = prev.selEnd;
+        if (compareMode) compareDiff();
+        return true;
+      }
+      document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+          const scope = replacePanel.style.display === 'block' || document.activeElement === rightText || replacePanel.contains(document.activeElement);
+          if (scope && undoStack.length) {
+            e.preventDefault();
+            undoProgrammatic();
+          }
+        }
+      });
+
+      // Draggable replace panel
+      (function makeDraggable(panel, handle) {
+        if (!panel || !handle) return;
+        let startX=0, startY=0, startLeft=0, startTop=0, dragging=false;
+        function onDown(ev){
+          const e = ev.touches ? ev.touches[0] : ev; ev.preventDefault(); dragging = true;
+          const rect = panel.getBoundingClientRect(); startLeft = rect.left; startTop = rect.top; startX = e.clientX; startY = e.clientY;
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('touchmove', onMove, {passive:false});
+          document.addEventListener('mouseup', onUp);
+          document.addEventListener('touchend', onUp);
+        }
+        function onMove(ev){
+          if (!dragging) return; const e = ev.touches ? ev.touches[0] : ev;
+          const dx = e.clientX - startX; const dy = e.clientY - startY;
+          let left = startLeft + dx; let top = startTop + dy;
+          const vw = window.innerWidth, vh = window.innerHeight; const rect = panel.getBoundingClientRect();
+          left = Math.min(vw - rect.width, Math.max(0, left)); top = Math.min(vh - rect.height, Math.max(0, top));
+          panel.style.left = left + 'px'; panel.style.top = top + 'px'; panel.style.right = 'auto'; panel.style.position = 'fixed';
+        }
+        function onUp(){ dragging = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('touchmove', onMove); document.removeEventListener('mouseup', onUp); document.removeEventListener('touchend', onUp); }
+        handle.addEventListener('mousedown', onDown); handle.addEventListener('touchstart', onDown, {passive:false});
+      })(replacePanel, document.querySelector('#replacePanel .replace-header'));
+
+      compareButton.addEventListener('click', function () {
+        compareMode = !compareMode; updateView();
+      });
+
+      editButton.addEventListener('click', function () {
+        if (!editMode) {
+          editMode = true; editButton.textContent = 'Lưu chỉnh sửa'; editButton.classList.add('save-mode'); rightText.readOnly = false;
+          if (compareMode) { rightDiff.style.display = 'none'; rightText.style.display = 'block'; }
+          rightText.focus();
+        } else {
+          editMode = false; editButton.textContent = 'Chỉnh sửa'; editButton.classList.remove('save-mode'); rightText.readOnly = true;
+          if (compareMode) { rightText.style.display = 'none'; rightDiff.style.display = 'block'; compareDiff(); }
+        }
+      });
+
+      downloadButton.addEventListener('click', function () {
+        const text = rightText.value; const blob = new Blob([text], { type: 'text/plain' }); const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = 'ban-dich-ai.txt'; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+      });
+
+      // ===== Replace feature =====
+      replaceButton.addEventListener('click', () => { toggleReplace(true); });
+      replaceClose.addEventListener('click', () => toggleReplace(false));
+
+      function toggleReplace(show) {
+        replacePanel.style.display = show ? 'block' : 'none';
+        if (show) {
+          rightDiff.style.display = 'none'; rightText.style.display = 'block'; rightText.focus();
+          if (typeof rightText.selectionStart !== 'number') { rightText.selectionStart = rightText.selectionEnd = 0; }
+        } else {
+          if (compareMode && !editMode) { rightText.style.display = 'none'; rightDiff.style.display = 'block'; compareDiff(); }
+        }
+      }
+
+      function escapeRegExp(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+      function buildRegex(term) { const source = escapeRegExp(term); return new RegExp(source, matchCase.checked ? 'g' : 'gi'); }
+
+      function findNextFrom(startIndex) {
+        const term = findWhat.value; if (!term) return false; const re = buildRegex(term); re.lastIndex = Math.max(0, startIndex);
+        const text = rightText.value; let m = re.exec(text);
+        if (!m) { re.lastIndex = 0; m = re.exec(text); if (!m) return false; }
+        const idx = m.index; rightText.focus(); rightText.selectionStart = idx; rightText.selectionEnd = idx + m[0].length; rightText.setSelectionRange(idx, idx + m[0].length);
+        return true;
+      }
+
+      function replaceFromCursor() {
+        const term = findWhat.value; if (!term) return; pushUndoState();
+        const start = rightText.selectionEnd || 0; const before = rightText.value.slice(0, start); const after = rightText.value.slice(start);
+        const re = buildRegex(term); const replaced = after.replace(re, replaceWith.value);
+        rightText.value = before + replaced; rightText.selectionStart = rightText.selectionEnd = before.length; if (compareMode) compareDiff();
+      }
+
+      function replaceAll() {
+        const term = findWhat.value; if (!term) return; pushUndoState();
+        const re = buildRegex(term); rightText.value = rightText.value.replace(re, replaceWith.value); if (compareMode) compareDiff();
+      }
+
+      btnFindNext.addEventListener('click', () => { const start = typeof rightText.selectionEnd === 'number' ? rightText.selectionEnd : 0; const ok = findNextFrom(start); if (!ok) alert('Không tìm thấy chuỗi phù hợp.'); });
+      btnReplace.addEventListener('click', replaceFromCursor);
+      btnReplaceAll.addEventListener('click', replaceAll);
+
+      // Phím tắt trong panel
+      replacePanel.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); replaceFromCursor(); }
+        else if (e.key === 'Enter') { e.preventDefault(); const start = typeof rightText.selectionEnd === 'number' ? rightText.selectionEnd : 0; findNextFrom(start); }
+        else if (e.key === 'Escape') { toggleReplace(false); }
+      });
+
+      // ==== Diff logic (nguyên bản) ====
+      function updateView() {
+        if (compareMode) {
+          compareButton.textContent = 'Tắt so khác biệt'; compareButton.classList.add('off');
+          leftText.style.display = 'none'; leftDiff.style.display = 'block';
+          if (!editMode && replacePanel.style.display !== 'block') { rightText.style.display = 'none'; rightDiff.style.display = 'block'; }
+          compareDiff();
+        } else {
+          compareButton.textContent = 'So khác biệt'; compareButton.classList.remove('off');
+          leftText.style.display = 'block'; leftDiff.style.display = 'none'; rightText.style.display = 'block'; rightDiff.style.display = 'none';
+        }
+      }
+
+      function compareDiff() {
+        const dmp = new diff_match_patch();
+        const text1 = leftText.value; const text2 = rightText.value;
+        const diffs = dmp.diff_main(text1, text2); dmp.diff_cleanupSemantic(diffs); displayDiffs(diffs);
+      }
+
+      function displayDiffs(diffs) {
+        let leftHtml = ''; let rightHtml = '';
+        diffs.forEach(function (diff) {
+          const text = diff[1]; const type = diff[0];
+          function esc(t){ return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#039;').replace(/\n/g,'<br>'); }
+          if (type === -1) { leftHtml += '<span class="diff-delete">' + esc(text) + '</span>'; }
+          else if (type === 1) { rightHtml += '<span class="diff-insert">' + esc(text) + '</span>'; }
+          else { leftHtml += esc(text); rightHtml += esc(text); }
+        });
+        leftDiff.innerHTML = leftHtml; rightDiff.innerHTML = rightHtml;
+      }
+
+      leftText.addEventListener('input', function () { if (compareMode && !editMode) { compareDiff(); } });
+    });
+  </script>
+</body>
+</html>
