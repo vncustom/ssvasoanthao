@@ -16,6 +16,8 @@
     .action-button { background: #2196F3; color: #fff; border: 0; padding: 10px 20px; font-size: 16px; cursor: pointer; border-radius: 4px; transition: .3s; }
     .action-button:hover { background: #0b7dda; }
     .save-mode { background: #4CAF50; }
+    .save-button { background: #FF9800; color: #fff; border: 0; padding: 10px 20px; font-size: 16px; cursor: pointer; border-radius: 4px; transition: .3s; }
+    .save-button:hover { background: #F57C00; }
     .panels { display: flex; gap: 20px; }
     .panel { flex: 1; display: flex; flex-direction: column; }
     .panel-title { font-weight: 600; margin-bottom: 10px; text-align: center; font-size: 18px; }
@@ -39,6 +41,29 @@
     .checkbox { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
     .checkbox input { width: 16px; height: 16px; }
     .helper { font-size: 12px; color: #666; margin-top: 2px; }
+    .replace-status { font-size: 12px; color: #28a745; margin-top: 5px; font-weight: 500; }
+    .case-controls { display: flex; gap: 5px; margin-top: 10px; }
+    .case-btn { padding: 6px 10px; font-size: 12px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; background: #f8f9fa; }
+    .case-btn:hover { background: #e9ecef; }
+    .chapter-title { 
+      font-weight: bold; 
+      margin: 10px 0 5px 0; 
+      background: #e0e0e0; 
+      padding: 5px; 
+      border-radius: 4px; 
+    }
+    .loading-indicator {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 15px 20px;
+      border-radius: 5px;
+      z-index: 1001;
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -48,7 +73,9 @@
       <button id="compareButton" class="toggle-button">So khác biệt</button>
       <button id="editButton" class="action-button">Chỉnh sửa</button>
       <button id="replaceButton" class="action-button">Replace</button>
+      <button id="saveButton" class="save-button">Save</button>
       <button id="downloadButton" class="action-button">Tải xuống</button>
+      <button id="syncScrollButton" class="toggle-button off">Cuộn đồng thời</button>
     </div>
 
     <div class="panels">
@@ -61,6 +88,11 @@
         <div class="panel-title">Bản dịch AI</div>
         <textarea id="rightText" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" placeholder="Nhập văn bản thứ hai..."></textarea>
         <div id="rightDiff" class="diff-display" style="display:none"></div>
+        <div class="case-controls">
+          <button id="lowercaseBtn" class="case-btn" title="Ctrl+U">lowercase</button>
+          <button id="properCaseBtn" class="case-btn" title="Alt+U">Proper Case</button>
+          <button id="uppercaseBtn" class="case-btn" title="Ctrl+Shift+U">UPPERCASE</button>
+        </div>
       </div>
     </div>
   </div>
@@ -84,7 +116,7 @@
       <input id="matchCase" type="checkbox" />
       <span>Match case</span>
     </label>
-    <div class="helper">Mẹo: Enter = Tìm tiếp, Ctrl/Cmd+Enter = Thay từ vị trí con trỏ đến cuối, Ctrl/Cmd+Z = Undo.</div>
+    <div class="helper">Mẹo: Enter = Tìm tiếp, Ctrl/Cmd+Enter = Thay từ vị trí con trỏ đến cuối, Ctrl/Cmd+Z = Undo, Ctrl/Cmd+Y = Redo.</div>
 
     <div class="row" style="margin-top:10px;">
       <div class="left">
@@ -93,7 +125,10 @@
         <button id="btnReplaceAll" class="mini-btn warn" title="Thay toàn bộ trong cửa sổ bên phải">Replace All</button>
       </div>
     </div>
+    <div id="replaceStatus" class="replace-status"></div>
   </div>
+
+  <div id="loadingIndicator" class="loading-indicator">Đang xử lý văn bản dài, vui lòng chờ...</div>
 
   <script>
     document.addEventListener('DOMContentLoaded', function () {
@@ -101,6 +136,9 @@
       const editButton = document.getElementById('editButton');
       const downloadButton = document.getElementById('downloadButton');
       const replaceButton = document.getElementById('replaceButton');
+      const saveButton = document.getElementById('saveButton');
+      const syncScrollButton = document.getElementById('syncScrollButton');
+      const loadingIndicator = document.getElementById('loadingIndicator');
 
       const leftText = document.getElementById('leftText');
       const rightText = document.getElementById('rightText');
@@ -115,18 +153,117 @@
       const btnFindNext = document.getElementById('btnFindNext');
       const btnReplace = document.getElementById('btnReplace');
       const btnReplaceAll = document.getElementById('btnReplaceAll');
+      const replaceStatus = document.getElementById('replaceStatus');
+
+      const lowercaseBtn = document.getElementById('lowercaseBtn');
+      const properCaseBtn = document.getElementById('properCaseBtn');
+      const uppercaseBtn = document.getElementById('uppercaseBtn');
 
       let compareMode = false;
       let editMode = false;
+      let syncScrollEnabled = false;
 
-      // ==== Undo stack for programmatic changes & draggable panel ====
       const undoStack = [];
+      const redoStack = [];
+      let savedFilePath = null;
+
+      // Hàm tách văn bản thành các chương
+      function splitChapters(text) {
+        if (!text) return [];
+        const chapterRegex = /(^|\n)##\s+(.+)/g;
+        const chapters = [];
+        let lastIndex = 0;
+        let match;
+        let lastTitle = "Phần đầu";
+
+        while ((match = chapterRegex.exec(text)) !== null) {
+          const chapterStart = match.index;
+          const title = match[0].trim();
+
+          // Lưu chương trước đó
+          if (chapterStart > lastIndex) {
+            const content = text.substring(lastIndex, chapterStart).trim();
+            if (content) {
+              chapters.push({ title: lastTitle, content: content });
+            }
+          }
+
+          lastTitle = title;
+          lastIndex = chapterRegex.lastIndex;
+        }
+
+        // Thêm chương cuối cùng
+        const lastContent = text.substring(lastIndex).trim();
+        if (lastContent) {
+          chapters.push({ title: lastTitle, content: lastContent });
+        }
+
+        // Nếu không có chương nào, coi toàn bộ là 1 chương
+        if (chapters.length === 0 && text.trim()) {
+          chapters.push({ title: "## [Không có tiêu đề]", content: text.trim() });
+        }
+
+        return chapters;
+      }
+
+      // Hàm escape HTML
+      function esc(t) {
+        if (t === null || t === undefined) return '';
+        return t.replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;')
+                .replace(/\n/g, '<br>');
+      }
+
+      // Hàm hiển thị khác biệt cho bên trái
+      function getLeftDiffHtml(diffs) {
+        let html = '';
+        for (const diff of diffs) {
+          const text = esc(diff[1]);
+          if (diff[0] === -1) {
+            html += `<span class="diff-delete">${text}</span>`;
+          } else if (diff[0] === 0) {
+            html += text;
+          }
+        }
+        return html;
+      }
+
+      // Hàm hiển thị khác biệt cho bên phải
+      function getRightDiffHtml(diffs) {
+        let html = '';
+        for (const diff of diffs) {
+          const text = esc(diff[1]);
+          if (diff[0] === 1) {
+            html += `<span class="diff-insert">${text}</span>`;
+          } else if (diff[0] === 0) {
+            html += text;
+          }
+        }
+        return html;
+      }
+
       function pushUndoState() {
-        undoStack.push({ value: rightText.value, selStart: rightText.selectionStart || 0, selEnd: rightText.selectionEnd || 0 });
+        undoStack.push({ 
+          value: rightText.value, 
+          selStart: rightText.selectionStart || 0, 
+          selEnd: rightText.selectionEnd || 0 
+        });
+        redoStack.length = 0;
         if (undoStack.length > 100) undoStack.shift();
       }
+
       function undoProgrammatic() {
         if (!undoStack.length) return false;
+        const current = {
+          value: rightText.value,
+          selStart: rightText.selectionStart || 0,
+          selEnd: rightText.selectionEnd || 0
+        };
+        redoStack.push(current);
+        
         const prev = undoStack.pop();
         rightText.value = prev.value;
         rightText.selectionStart = prev.selStart;
@@ -134,15 +271,168 @@
         if (compareMode) compareDiff();
         return true;
       }
+
+      function redoProgrammatic() {
+        if (!redoStack.length) return false;
+        const current = {
+          value: rightText.value,
+          selStart: rightText.selectionStart || 0,
+          selEnd: rightText.selectionEnd || 0
+        };
+        undoStack.push(current);
+        
+        const next = redoStack.pop();
+        rightText.value = next.value;
+        rightText.selectionStart = next.selStart;
+        rightText.selectionEnd = next.selEnd;
+        if (compareMode) compareDiff();
+        return true;
+      }
+
       document.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
-          const scope = replacePanel.style.display === 'block' || document.activeElement === rightText || replacePanel.contains(document.activeElement);
-          if (scope && undoStack.length) {
+        const isRightTextFocused = document.activeElement === rightText;
+        const isInReplacePanel = replacePanel.style.display === 'block' || replacePanel.contains(document.activeElement);
+        const scope = isInReplacePanel || isRightTextFocused;
+
+        // Undo (Ctrl+Z)
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && scope) {
+          if (undoStack.length) {
             e.preventDefault();
             undoProgrammatic();
           }
         }
+        // Redo (Ctrl+Y)
+        else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'y' && scope) {
+          if (redoStack.length) {
+            e.preventDefault();
+            redoProgrammatic();
+          }
+        }
+        // Case conversion shortcuts (only when right text is focused)
+        else if (isRightTextFocused) {
+          // Ctrl+U - lowercase
+          if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u') {
+            e.preventDefault();
+            convertSelectedCase('lower');
+          }
+          // Alt+U - Proper Case
+          else if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'u') {
+            e.preventDefault();
+            convertSelectedCase('proper');
+          }
+          // Ctrl+Shift+U - UPPERCASE
+          else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u') {
+            e.preventDefault();
+            convertSelectedCase('upper');
+          }
+        }
       });
+
+      function convertSelectedCase(caseType) {
+        const start = rightText.selectionStart;
+        const end = rightText.selectionEnd;
+        
+        if (start === end) {
+          alert('Vui lòng bôi chọn văn bản cần chuyển đổi.');
+          return;
+        }
+
+        pushUndoState();
+        
+        const selectedText = rightText.value.substring(start, end);
+        let convertedText;
+        
+        switch (caseType) {
+          case 'lower':
+            convertedText = selectedText.toLowerCase();
+            break;
+          case 'upper':
+            convertedText = selectedText.toUpperCase();
+            break;
+          case 'proper':
+            convertedText = selectedText.toLowerCase().replace(/(?:^|\s)\S/g, function(match) {
+              return match.toUpperCase();
+            });
+            break;
+        }
+        
+        const newValue = rightText.value.substring(0, start) + convertedText + rightText.value.substring(end);
+        rightText.value = newValue;
+        rightText.selectionStart = start;
+        rightText.selectionEnd = start + convertedText.length;
+        
+        if (compareMode) compareDiff();
+      }
+
+      syncScrollButton.addEventListener('click', function() {
+        syncScrollEnabled = !syncScrollEnabled;
+        if (syncScrollEnabled) {
+          syncScrollButton.textContent = 'Tắt cuộn đồng thời';
+          syncScrollButton.classList.remove('off');
+        } else {
+          syncScrollButton.textContent = 'Cuộn đồng thời';
+          syncScrollButton.classList.add('off');
+        }
+      });
+
+      function syncScroll(source, target) {
+        if (!syncScrollEnabled) return;
+        
+        const sourceScrollTop = source.scrollTop;
+        const sourceScrollHeight = source.scrollHeight - source.clientHeight;
+        const targetScrollHeight = target.scrollHeight - target.clientHeight;
+        
+        if (sourceScrollHeight > 0) {
+          const scrollRatio = sourceScrollTop / sourceScrollHeight;
+          target.scrollTop = scrollRatio * targetScrollHeight;
+        }
+      }
+
+      leftText.addEventListener('scroll', function() {
+        syncScroll(leftText, rightText);
+      });
+
+      rightText.addEventListener('scroll', function() {
+        syncScroll(rightText, leftText);
+      });
+
+      leftDiff.addEventListener('scroll', function() {
+        syncScroll(leftDiff, rightDiff);
+      });
+
+      rightDiff.addEventListener('scroll', function() {
+        syncScroll(rightDiff, leftDiff);
+      });
+
+      saveButton.addEventListener('click', function() {
+        const text = rightText.value;
+        
+        if (!savedFilePath) {
+          // First time save - Save As
+          const filename = prompt('Nhập tên file (không cần .txt):', 'ban-dich-ai');
+          if (filename) {
+            savedFilePath = filename.endsWith('.txt') ? filename : filename + '.txt';
+            downloadFile(text, savedFilePath);
+            alert(`Đã lưu file: ${savedFilePath}`);
+          }
+        } else {
+          // Overwrite existing file
+          downloadFile(text, savedFilePath);
+          alert(`Đã ghi đè file: ${savedFilePath}`);
+        }
+      });
+
+      function downloadFile(text, filename) {
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
 
       // Draggable replace panel
       (function makeDraggable(panel, handle) {
@@ -214,15 +504,48 @@
       }
 
       function replaceFromCursor() {
-        const term = findWhat.value; if (!term) return; pushUndoState();
-        const start = rightText.selectionEnd || 0; const before = rightText.value.slice(0, start); const after = rightText.value.slice(start);
-        const re = buildRegex(term); const replaced = after.replace(re, replaceWith.value);
-        rightText.value = before + replaced; rightText.selectionStart = rightText.selectionEnd = before.length; if (compareMode) compareDiff();
+        const term = findWhat.value; 
+        if (!term) return; 
+        
+        pushUndoState();
+        const start = rightText.selectionEnd || 0; 
+        const before = rightText.value.slice(0, start); 
+        const after = rightText.value.slice(start);
+        const re = buildRegex(term); 
+        
+        // Count matches before replacing
+        const matches = after.match(re);
+        const count = matches ? matches.length : 0;
+        
+        const replaced = after.replace(re, replaceWith.value);
+        rightText.value = before + replaced; 
+        rightText.selectionStart = rightText.selectionEnd = before.length; 
+        
+        if (compareMode) compareDiff();
+        
+        // Display count
+        replaceStatus.textContent = `${count} lần được thay thế (từ vị trí con trỏ)`;
+        setTimeout(() => replaceStatus.textContent = '', 3000);
       }
 
       function replaceAll() {
-        const term = findWhat.value; if (!term) return; pushUndoState();
-        const re = buildRegex(term); rightText.value = rightText.value.replace(re, replaceWith.value); if (compareMode) compareDiff();
+        const term = findWhat.value; 
+        if (!term) return; 
+        
+        pushUndoState();
+        const re = buildRegex(term); 
+        
+        // Count matches before replacing
+        const matches = rightText.value.match(re);
+        const count = matches ? matches.length : 0;
+        
+        rightText.value = rightText.value.replace(re, replaceWith.value); 
+        
+        if (compareMode) compareDiff();
+        
+        // Display count
+        replaceStatus.textContent = `${count} lần được thay thế (toàn bộ)`;
+        setTimeout(() => replaceStatus.textContent = '', 3000);
       }
 
       btnFindNext.addEventListener('click', () => { const start = typeof rightText.selectionEnd === 'number' ? rightText.selectionEnd : 0; const ok = findNextFrom(start); if (!ok) alert('Không tìm thấy chuỗi phù hợp.'); });
@@ -236,7 +559,7 @@
         else if (e.key === 'Escape') { toggleReplace(false); }
       });
 
-      // ==== Diff logic (nguyên bản) ====
+      // ==== Optimized Diff Logic ====
       function updateView() {
         if (compareMode) {
           compareButton.textContent = 'Tắt so khác biệt'; compareButton.classList.add('off');
@@ -250,24 +573,82 @@
       }
 
       function compareDiff() {
-        const dmp = new diff_match_patch();
-        const text1 = leftText.value; const text2 = rightText.value;
-        const diffs = dmp.diff_main(text1, text2); dmp.diff_cleanupSemantic(diffs); displayDiffs(diffs);
+        const text1 = leftText.value;
+        const text2 = rightText.value;
+        
+        // Hiển thị loading khi văn bản dài
+        if (text1.length > 10000 || text2.length > 10000) {
+          loadingIndicator.style.display = 'block';
+          setTimeout(() => {
+            doCompareDiff(text1, text2);
+            loadingIndicator.style.display = 'none';
+          }, 50);
+        } else {
+          doCompareDiff(text1, text2);
+        }
       }
 
-      function displayDiffs(diffs) {
-        let leftHtml = ''; let rightHtml = '';
-        diffs.forEach(function (diff) {
-          const text = diff[1]; const type = diff[0];
-          function esc(t){ return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#039;').replace(/\n/g,'<br>'); }
-          if (type === -1) { leftHtml += '<span class="diff-delete">' + esc(text) + '</span>'; }
-          else if (type === 1) { rightHtml += '<span class="diff-insert">' + esc(text) + '</span>'; }
-          else { leftHtml += esc(text); rightHtml += esc(text); }
-        });
-        leftDiff.innerHTML = leftHtml; rightDiff.innerHTML = rightHtml;
+      function doCompareDiff(text1, text2) {
+        const dmp = new diff_match_patch();
+        dmp.Diff_Timeout = 50.0; // Giới hạn thời gian cho mỗi phần
+
+        // Tách văn bản thành các chương
+        const chaps1 = splitChapters(text1);
+        const chaps2 = splitChapters(text2);
+
+        let leftHtml = '';
+        let rightHtml = '';
+
+        // So sánh từng chương tương ứng
+        const minChapters = Math.min(chaps1.length, chaps2.length);
+        for (let i = 0; i < minChapters; i++) {
+          const chap1 = chaps1[i];
+          const chap2 = chaps2[i];
+
+          // Hiển thị tiêu đề chương (không so sánh)
+          leftHtml += `<div class="chapter-title">${esc(chap1.title)}</div>`;
+          rightHtml += `<div class="chapter-title">${esc(chap2.title)}</div>`;
+
+          // So sánh nội dung chương
+          const diffs = dmp.diff_main(chap1.content, chap2.content);
+          dmp.diff_cleanupSemantic(diffs);
+          
+          leftHtml += getLeftDiffHtml(diffs);
+          rightHtml += getRightDiffHtml(diffs);
+        }
+
+        // Xử lý các chương thừa (nếu có)
+        if (chaps1.length > minChapters) {
+          for (let i = minChapters; i < chaps1.length; i++) {
+            leftHtml += `<div class="chapter-title">${esc(chaps1[i].title)}</div>`;
+            leftHtml += `<div class="diff-delete">${esc(chaps1[i].content)}</div>`;
+          }
+        }
+
+        if (chaps2.length > minChapters) {
+          for (let i = minChapters; i < chaps2.length; i++) {
+            rightHtml += `<div class="chapter-title">${esc(chaps2[i].title)}</div>`;
+            rightHtml += `<div class="diff-insert">${esc(chaps2[i].content)}</div>`;
+          }
+        }
+
+        leftDiff.innerHTML = leftHtml;
+        rightDiff.innerHTML = rightHtml;
       }
 
       leftText.addEventListener('input', function () { if (compareMode && !editMode) { compareDiff(); } });
+
+      lowercaseBtn.addEventListener('click', function() {
+        convertSelectedCase('lower');
+      });
+
+      properCaseBtn.addEventListener('click', function() {
+        convertSelectedCase('proper');
+      });
+
+      uppercaseBtn.addEventListener('click', function() {
+        convertSelectedCase('upper');
+      });
     });
   </script>
 </body>
